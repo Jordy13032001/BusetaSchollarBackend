@@ -605,6 +605,8 @@ app.post('/api/chofer/:correo/viajes/finalizar', async (req, res) => {
     const chofer = await getChoferByCorreo(pool, correo);
     if (!chofer) return res.status(404).json({ error: 'Chofer no encontrado' });
 
+    const { fecha_celular } = req.body;
+
     const idRuta = await getOrCreateRutaForChofer(pool, chofer.id_chofer, chofer.nombre_completo);
     const viajeResult = await pool.query(
       'SELECT * FROM viajes WHERE id_ruta = $1 AND fecha = CURRENT_DATE',
@@ -614,9 +616,12 @@ app.post('/api/chofer/:correo/viajes/finalizar', async (req, res) => {
       return res.status(404).json({ error: 'No hay viaje activo hoy' });
     }
 
+    // Try to ensure column exists
+    await pool.query('ALTER TABLE viajes ADD COLUMN IF NOT EXISTS hora_fin_celular VARCHAR(50)');
+
     const update = await pool.query(
-      "UPDATE viajes SET estado = 'FINALIZADO', hora_fin = NOW() WHERE id_viaje = $1 RETURNING *",
-      [viajeResult.rows[0].id_viaje]
+      "UPDATE viajes SET estado = 'FINALIZADO', hora_fin = NOW(), hora_fin_celular = $2 WHERE id_viaje = $1 RETURNING *",
+      [viajeResult.rows[0].id_viaje, fecha_celular || null]
     );
     const viaje = update.rows[0];
     const stats = await getViajeStats(pool, idRuta, viaje.id_viaje);

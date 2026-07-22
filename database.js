@@ -148,6 +148,7 @@ const initializeDatabase = async () => {
         fecha           DATE NOT NULL,
         hora_inicio     TIMESTAMP,
         hora_fin        TIMESTAMP,
+        hora_fin_celular VARCHAR(50),
         estado          estado_viaje NOT NULL DEFAULT 'PROGRAMADO',
         UNIQUE (id_ruta, fecha)
       );
