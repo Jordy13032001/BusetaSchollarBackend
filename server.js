@@ -354,7 +354,7 @@ app.post('/api/estudiantes', async (req, res) => {
     await client.query('BEGIN');
 
     const padreResult = await client.query(
-      "SELECT id_usuario FROM usuarios WHERE correo = $1 AND rol = 'padre'",
+      "SELECT u.id_usuario FROM usuarios u JOIN perfil_padre p ON u.id_usuario = p.id_padre WHERE u.correo = $1",
       [correo_padre]
     );
     if (padreResult.rowCount === 0) {
