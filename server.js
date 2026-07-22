@@ -329,8 +329,10 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/choferes', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id_usuario AS id_chofer, u.nombre_completo, u.correo, pc.tarifa_mensual
-       FROM perfil_chofer pc JOIN usuarios u ON u.id_usuario = pc.id_chofer
+      `SELECT u.id_usuario AS id_chofer, u.nombre_completo, u.correo, pc.tarifa_mensual, b.placa, b.modelo
+       FROM perfil_chofer pc 
+       JOIN usuarios u ON u.id_usuario = pc.id_chofer
+       LEFT JOIN buses b ON b.id_chofer_asignado = pc.id_chofer
        ORDER BY u.nombre_completo`
     );
     res.status(200).json(result.rows);
