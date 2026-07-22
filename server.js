@@ -425,7 +425,8 @@ app.post('/api/estudiantes', async (req, res) => {
 const ESTUDIANTES_RUTA_SELECT = `
   SELECT e.id_estudiante, e.nombre_completo, p.nombre AS direccion,
          TO_CHAR(p.hora_estimada, 'HH24:MI') AS hora_estimada, p.lat, p.lng,
-         up.correo AS correo_padre, uc.correo AS correo_chofer
+         up.correo AS correo_padre, uc.correo AS correo_chofer,
+         COALESCE(a.subio, false) AS subio
   FROM estudiantes e
   JOIN rutas r ON r.id_ruta = e.id_ruta
   JOIN perfil_chofer pc ON pc.id_chofer = r.id_chofer
@@ -433,6 +434,8 @@ const ESTUDIANTES_RUTA_SELECT = `
   LEFT JOIN paradas p ON p.id_parada = e.id_parada
   LEFT JOIN padres_estudiantes pe ON pe.id_estudiante = e.id_estudiante
   LEFT JOIN usuarios up ON up.id_usuario = pe.id_padre
+  LEFT JOIN viajes v ON v.id_ruta = r.id_ruta AND v.fecha = CURRENT_DATE
+  LEFT JOIN asistencias a ON a.id_viaje = v.id_viaje AND a.id_estudiante = e.id_estudiante
 `;
 
 // 6. Obtener ruta del chofer
