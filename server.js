@@ -144,11 +144,11 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-// 2. Unirse como conductor
+// 2. Unirse como conductor (Postulación)
 app.post('/api/unirse-conductor', async (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ error: 'Email es requerido' });
+  const { email, placa, modelo, capacidad, tarifa_mensual } = req.body;
+  if (!email || !placa || !modelo || !capacidad || !tarifa_mensual) {
+    return res.status(400).json({ error: 'Todos los campos son requeridos' });
   }
 
   const client = await pool.connect();
@@ -156,38 +156,121 @@ app.post('/api/unirse-conductor', async (req, res) => {
     await client.query('BEGIN');
 
     const usuarioResult = await client.query(
-      'SELECT id_usuario, nombre_completo FROM usuarios WHERE correo = $1 FOR UPDATE',
+      'SELECT id_usuario FROM usuarios WHERE correo = $1',
       [email]
     );
     if (usuarioResult.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
-    const usuario = usuarioResult.rows[0];
+    const idUsuario = usuarioResult.rows[0].id_usuario;
 
-    await client.query("UPDATE usuarios SET rol = 'chofer' WHERE id_usuario = $1", [usuario.id_usuario]);
-    await client.query(
-      'INSERT INTO perfil_chofer (id_chofer) VALUES ($1) ON CONFLICT (id_chofer) DO NOTHING',
-      [usuario.id_usuario]
+    // Verificar si ya tiene una solicitud pendiente
+    const existente = await client.query(
+      "SELECT id_solicitud FROM solicitudes_chofer WHERE id_usuario = $1 AND estado = 'PENDIENTE'",
+      [idUsuario]
     );
-    await getOrCreateRutaForChofer(client, usuario.id_usuario, usuario.nombre_completo);
+    if (existente.rowCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Ya tienes una solicitud pendiente' });
+    }
+
+    await client.query(
+      `INSERT INTO solicitudes_chofer (id_usuario, placa, modelo, capacidad, tarifa_mensual)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [idUsuario, placa, modelo, capacidad, tarifa_mensual]
+    );
 
     await client.query('COMMIT');
     res.status(200).json({
-      message: 'Rol actualizado exitosamente a conductor',
-      user: {
-        id: usuario.id_usuario,
-        name: usuario.nombre_completo,
-        email,
-        role: 'chofer',
-      },
+      message: 'Solicitud enviada exitosamente para aprobación',
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error al actualizar rol:', err);
+    console.error('Error al enviar solicitud:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   } finally {
     client.release();
+  }
+});
+
+// ADMIN: Obtener solicitudes pendientes
+app.get('/api/solicitudes', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT s.id_solicitud, u.nombre_completo, u.correo, s.placa, s.modelo, s.capacidad, s.tarifa_mensual, s.fecha_creacion
+       FROM solicitudes_chofer s JOIN usuarios u ON u.id_usuario = s.id_usuario
+       WHERE s.estado = 'PENDIENTE' ORDER BY s.fecha_creacion ASC`
+    );
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener solicitudes:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ADMIN: Aprobar solicitud
+app.post('/api/solicitudes/:id/aprobar', async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const solResult = await client.query(
+      "SELECT * FROM solicitudes_chofer WHERE id_solicitud = $1 AND estado = 'PENDIENTE'",
+      [id]
+    );
+    if (solResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Solicitud no encontrada o ya procesada' });
+    }
+    const sol = solResult.rows[0];
+
+    // Cambiar estado de solicitud
+    await client.query("UPDATE solicitudes_chofer SET estado = 'APROBADA' WHERE id_solicitud = $1", [id]);
+
+    // Cambiar rol y crear perfil
+    const usuarioResult = await client.query("UPDATE usuarios SET rol = 'chofer' WHERE id_usuario = $1 RETURNING nombre_completo", [sol.id_usuario]);
+    const nombreCompleto = usuarioResult.rows[0].nombre_completo;
+
+    await client.query(
+      'INSERT INTO perfil_chofer (id_chofer, tarifa_mensual) VALUES ($1, $2) ON CONFLICT (id_chofer) DO UPDATE SET tarifa_mensual = EXCLUDED.tarifa_mensual',
+      [sol.id_usuario, sol.tarifa_mensual]
+    );
+    
+    // Crear bus
+    await client.query(
+      'INSERT INTO buses (placa, modelo, capacidad, id_chofer_asignado) VALUES ($1, $2, $3, $4) ON CONFLICT (placa) DO NOTHING',
+      [sol.placa, sol.modelo, sol.capacidad, sol.id_usuario]
+    );
+
+    // Auto-provisionar ruta default
+    await getOrCreateRutaForChofer(client, sol.id_usuario, nombreCompleto);
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Solicitud aprobada y perfil de chofer creado' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al aprobar solicitud:', err);
+    res.status(500).json({ error: 'Error interno' });
+  } finally {
+    client.release();
+  }
+});
+
+// ADMIN: Rechazar solicitud
+app.post('/api/solicitudes/:id/rechazar', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      "UPDATE solicitudes_chofer SET estado = 'RECHAZADA' WHERE id_solicitud = $1 AND estado = 'PENDIENTE' RETURNING *",
+      [id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Solicitud no encontrada o ya procesada' });
+    res.status(200).json({ message: 'Solicitud rechazada' });
+  } catch (err) {
+    console.error('Error al rechazar solicitud:', err);
+    res.status(500).json({ error: 'Error interno' });
   }
 });
 

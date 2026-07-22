@@ -42,6 +42,9 @@ const initializeDatabase = async () => {
         CREATE TYPE estado_incidente AS ENUM ('ABIERTO', 'RESUELTO');
       EXCEPTION WHEN duplicate_object THEN NULL; END $$;
       DO $$ BEGIN
+        CREATE TYPE estado_solicitud AS ENUM ('PENDIENTE', 'APROBADA', 'RECHAZADA');
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+      DO $$ BEGIN
         CREATE TYPE tipo_notificacion AS ENUM ('CERCA', 'SUBIO', 'FINALIZADA', 'ALERTA');
       EXCEPTION WHEN duplicate_object THEN NULL; END $$;
       DO $$ BEGIN
@@ -79,6 +82,17 @@ const initializeDatabase = async () => {
       CREATE TABLE IF NOT EXISTS perfil_padre (
         id_padre    INTEGER PRIMARY KEY REFERENCES usuarios(id_usuario) ON DELETE CASCADE,
         foto_url    VARCHAR(255)
+      );
+
+      CREATE TABLE IF NOT EXISTS solicitudes_chofer (
+        id_solicitud    SERIAL PRIMARY KEY,
+        id_usuario      INTEGER NOT NULL REFERENCES usuarios(id_usuario) ON DELETE CASCADE,
+        placa           VARCHAR(15) NOT NULL,
+        modelo          VARCHAR(60) NOT NULL,
+        capacidad       INTEGER NOT NULL,
+        tarifa_mensual  DECIMAL(10, 2) NOT NULL,
+        estado          estado_solicitud NOT NULL DEFAULT 'PENDIENTE',
+        fecha_creacion  TIMESTAMP NOT NULL DEFAULT NOW()
       );
 
       CREATE TABLE IF NOT EXISTS buses (
