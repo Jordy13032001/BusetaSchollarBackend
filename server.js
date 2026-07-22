@@ -315,6 +315,7 @@ app.post('/api/login', async (req, res) => {
         id: usuario.id_usuario,
         name: usuario.nombre_completo,
         email: usuario.correo,
+        phone: usuario.telefono,
         role: usuario.rol,
         roles: roles
       },
