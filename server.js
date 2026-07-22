@@ -293,6 +293,22 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
+    let roles = [];
+    if (usuario.rol === 'admin') {
+      roles = ['admin'];
+    } else {
+      // Check perfil_padre
+      const isPadre = await pool.query('SELECT 1 FROM perfil_padre WHERE id_padre = $1', [usuario.id_usuario]);
+      if (isPadre.rowCount > 0) roles.push('padre');
+
+      // Check perfil_chofer
+      const isChofer = await pool.query('SELECT 1 FROM perfil_chofer WHERE id_chofer = $1', [usuario.id_usuario]);
+      if (isChofer.rowCount > 0) roles.push('chofer');
+      
+      // Fallback
+      if (roles.length === 0) roles.push(usuario.rol);
+    }
+
     res.status(200).json({
       message: 'Login exitoso',
       user: {
@@ -300,6 +316,7 @@ app.post('/api/login', async (req, res) => {
         name: usuario.nombre_completo,
         email: usuario.correo,
         role: usuario.rol,
+        roles: roles
       },
     });
   } catch (err) {
