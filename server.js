@@ -65,7 +65,10 @@ async function getChoferByCorreo(runner, correo) {
 }
 
 async function getViajeStats(runner, idRuta, idViaje) {
-  const total = await runner.query('SELECT COUNT(*)::int AS n FROM estudiantes WHERE id_ruta = $1', [idRuta]);
+  const total = await runner.query(
+    "SELECT COUNT(*)::int AS n FROM estudiantes WHERE id_ruta = $1 AND estado = 'ACEPTADO'",
+    [idRuta]
+  );
   const asistencia = await runner.query(
     `SELECT
        COUNT(*) FILTER (WHERE subio) ::int AS subieron,
@@ -329,11 +332,18 @@ app.post('/api/login', async (req, res) => {
 // 4. Obtener lista de choferes disponibles
 app.get('/api/choferes', async (req, res) => {
   try {
+    // Se incluye la ruta que el chofer definió: el padre la revisa antes de contratarlo.
     const result = await pool.query(
-      `SELECT u.id_usuario AS id_chofer, u.nombre_completo, u.correo, pc.tarifa_mensual, b.placa, b.modelo
-       FROM perfil_chofer pc 
+      `SELECT u.id_usuario AS id_chofer, u.nombre_completo, u.correo, pc.tarifa_mensual,
+              b.placa, b.modelo,
+              r.nombre AS nombre_ruta, r.turno, r.sectores,
+              TO_CHAR(r.hora_salida_estimada, 'HH24:MI') AS hora_salida,
+              c.nombre AS colegio
+       FROM perfil_chofer pc
        JOIN usuarios u ON u.id_usuario = pc.id_chofer
        LEFT JOIN buses b ON b.id_chofer_asignado = pc.id_chofer
+       LEFT JOIN rutas r ON r.id_chofer = pc.id_chofer
+       LEFT JOIN colegios c ON c.id_colegio = r.id_colegio
        ORDER BY u.nombre_completo`
     );
     res.status(200).json(result.rows);
@@ -372,9 +382,10 @@ app.post('/api/estudiantes', async (req, res) => {
     const idRuta = await getOrCreateRutaForChofer(client, chofer.id_chofer, chofer.nombre_completo);
     const idColegio = await getDefaultColegioId(client);
 
+    // Queda PENDIENTE: el estudiante no entra a la ruta hasta que el chofer lo acepte.
     const estudianteInsert = await client.query(
-      `INSERT INTO estudiantes (nombre_completo, id_colegio, id_ruta)
-       VALUES ($1, $2, $3) RETURNING id_estudiante`,
+      `INSERT INTO estudiantes (nombre_completo, id_colegio, id_ruta, estado)
+       VALUES ($1, $2, $3, 'PENDIENTE') RETURNING id_estudiante`,
       [nombre_completo, idColegio, idRuta]
     );
     const idEstudiante = estudianteInsert.rows[0].id_estudiante;
@@ -403,7 +414,7 @@ app.post('/api/estudiantes', async (req, res) => {
 
     await client.query('COMMIT');
     res.status(201).json({
-      message: 'Estudiante agregado exitosamente',
+      message: 'Solicitud enviada. El chofer debe aceptar al estudiante.',
       child: {
         id_estudiante: idEstudiante,
         nombre_completo,
@@ -412,6 +423,7 @@ app.post('/api/estudiantes', async (req, res) => {
         lng: lng ?? null,
         correo_padre,
         correo_chofer,
+        estado: 'PENDIENTE',
       },
     });
   } catch (err) {
@@ -427,6 +439,7 @@ const ESTUDIANTES_RUTA_SELECT = `
   SELECT e.id_estudiante, e.nombre_completo, p.nombre AS direccion,
          TO_CHAR(p.hora_estimada, 'HH24:MI') AS hora_estimada, p.lat, p.lng,
          up.correo AS correo_padre, uc.correo AS correo_chofer,
+         e.estado, uc.nombre_completo AS nombre_chofer,
          COALESCE(a.subio, false) AS subio
   FROM estudiantes e
   JOIN rutas r ON r.id_ruta = e.id_ruta
@@ -439,17 +452,125 @@ const ESTUDIANTES_RUTA_SELECT = `
   LEFT JOIN asistencias a ON a.id_viaje = v.id_viaje AND a.id_estudiante = e.id_estudiante
 `;
 
-// 6. Obtener ruta del chofer
+// 6. Obtener ruta del chofer (solo los estudiantes que el chofer ya aceptó:
+// la ruta se arma exactamente con ellos)
 app.get('/api/chofer/:correo/ruta', async (req, res) => {
   const { correo } = req.params;
   try {
     const result = await pool.query(
-      `${ESTUDIANTES_RUTA_SELECT} WHERE uc.correo = $1 ORDER BY p.orden NULLS LAST`,
+      `${ESTUDIANTES_RUTA_SELECT}
+       WHERE uc.correo = $1 AND e.estado = 'ACEPTADO'
+       ORDER BY p.orden NULLS LAST`,
       [correo]
     );
     res.status(200).json(result.rows);
   } catch (err) {
     console.error('Error al obtener ruta:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// 6b. Solicitudes de estudiantes pendientes de aprobación del chofer
+app.get('/api/chofer/:correo/estudiantes/solicitudes', async (req, res) => {
+  const { correo } = req.params;
+  try {
+    const result = await pool.query(
+      `${ESTUDIANTES_RUTA_SELECT}
+       WHERE uc.correo = $1 AND e.estado = 'PENDIENTE'
+       ORDER BY e.id_estudiante`,
+      [correo]
+    );
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener solicitudes de estudiantes:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// 6c. El chofer acepta un estudiante: entra a la ruta
+app.post('/api/estudiantes/:id/aceptar', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `UPDATE estudiantes SET estado = 'ACEPTADO'
+       WHERE id_estudiante = $1 RETURNING id_estudiante`,
+      [id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Estudiante no encontrado' });
+    }
+    res.status(200).json({ message: 'Estudiante aceptado' });
+  } catch (err) {
+    console.error('Error al aceptar estudiante:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// 6d. El chofer rechaza un estudiante: no forma parte de la ruta
+app.post('/api/estudiantes/:id/rechazar', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `UPDATE estudiantes SET estado = 'RECHAZADO'
+       WHERE id_estudiante = $1 RETURNING id_estudiante`,
+      [id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Estudiante no encontrado' });
+    }
+    res.status(200).json({ message: 'Estudiante rechazado' });
+  } catch (err) {
+    console.error('Error al rechazar estudiante:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// 6e. Datos descriptivos de la ruta del chofer (lo que el padre ve al contratar)
+app.get('/api/chofer/:correo/ruta-info', async (req, res) => {
+  const { correo } = req.params;
+  try {
+    const chofer = await getChoferByCorreo(pool, correo);
+    if (!chofer) return res.status(404).json({ error: 'Chofer no encontrado' });
+
+    const idRuta = await getOrCreateRutaForChofer(pool, chofer.id_chofer, chofer.nombre_completo);
+    const result = await pool.query(
+      `SELECT r.id_ruta, r.nombre, r.turno, r.sectores,
+              TO_CHAR(r.hora_salida_estimada, 'HH24:MI') AS hora_salida,
+              c.nombre AS colegio, r.id_colegio
+       FROM rutas r JOIN colegios c ON c.id_colegio = r.id_colegio
+       WHERE r.id_ruta = $1`,
+      [idRuta]
+    );
+    res.status(200).json(result.rows[0]);
+  } catch (err) {
+    console.error('Error al obtener info de ruta:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.put('/api/chofer/:correo/ruta-info', async (req, res) => {
+  const { correo } = req.params;
+  const { nombre, turno, sectores, hora_salida, id_colegio } = req.body;
+  if (!nombre || !turno) {
+    return res.status(400).json({ error: 'Nombre y turno son requeridos' });
+  }
+  try {
+    const chofer = await getChoferByCorreo(pool, correo);
+    if (!chofer) return res.status(404).json({ error: 'Chofer no encontrado' });
+
+    const idRuta = await getOrCreateRutaForChofer(pool, chofer.id_chofer, chofer.nombre_completo);
+    const colegio = id_colegio || (await getDefaultColegioId(pool));
+
+    await pool.query(
+      `UPDATE rutas
+       SET nombre = $1, turno = $2, sectores = $3,
+           hora_salida_estimada = $4, id_colegio = $5
+       WHERE id_ruta = $6`,
+      [nombre, turno, sectores ?? null, hora_salida || null, colegio, idRuta]
+    );
+    res.status(200).json({ message: 'Ruta actualizada' });
+  } catch (err) {
+    console.error('Error al actualizar info de ruta:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

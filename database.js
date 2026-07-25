@@ -50,6 +50,9 @@ const initializeDatabase = async () => {
       DO $$ BEGIN
         CREATE TYPE parentesco_tipo AS ENUM ('MADRE', 'PADRE', 'TUTOR');
       EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+      DO $$ BEGIN
+        CREATE TYPE estado_estudiante AS ENUM ('PENDIENTE', 'ACEPTADO', 'RECHAZADO');
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     `);
 
     await pool.query(`
@@ -132,7 +135,8 @@ const initializeDatabase = async () => {
         grado           VARCHAR(30),
         id_colegio      INTEGER NOT NULL REFERENCES colegios(id_colegio),
         id_ruta         INTEGER REFERENCES rutas(id_ruta),
-        id_parada       INTEGER REFERENCES paradas(id_parada)
+        id_parada       INTEGER REFERENCES paradas(id_parada),
+        estado          estado_estudiante NOT NULL DEFAULT 'PENDIENTE'
       );
 
       CREATE TABLE IF NOT EXISTS padres_estudiantes (
@@ -207,6 +211,24 @@ const initializeDatabase = async () => {
       CREATE INDEX IF NOT EXISTS idx_incidentes_usuario_reporta ON incidentes(id_usuario_reporta);
       CREATE INDEX IF NOT EXISTS idx_notificaciones_usuario ON notificaciones(id_usuario_destino, leida);
       CREATE INDEX IF NOT EXISTS idx_ubicaciones_viaje_fecha ON ubicaciones_bus(id_viaje, fecha_hora);
+    `);
+
+    // Migraciones para bases ya creadas: CREATE TABLE IF NOT EXISTS no agrega
+    // columnas nuevas a tablas existentes, así que se añaden aquí.
+    await pool.query(`
+      ALTER TABLE estudiantes
+        ADD COLUMN IF NOT EXISTS estado estado_estudiante NOT NULL DEFAULT 'PENDIENTE';
+
+      -- Datos previos a este cambio ya estaban en la ruta del chofer: se dan por aceptados
+      -- para no dejar rutas vacías tras el despliegue.
+      UPDATE estudiantes SET estado = 'ACEPTADO'
+        WHERE id_ruta IS NOT NULL AND estado = 'PENDIENTE';
+
+      -- Descripción de la ruta que el padre ve antes de contratar al chofer.
+      ALTER TABLE rutas
+        ADD COLUMN IF NOT EXISTS sectores VARCHAR(255);
+
+      CREATE INDEX IF NOT EXISTS idx_estudiantes_estado ON estudiantes(estado);
     `);
 
     const colegios = await pool.query('SELECT id_colegio FROM colegios LIMIT 1');
