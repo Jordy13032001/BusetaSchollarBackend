@@ -234,7 +234,12 @@ const initializeDatabase = async () => {
     const colegios = await pool.query('SELECT id_colegio FROM colegios LIMIT 1');
     if (colegios.rowCount === 0) {
       await pool.query(
-        "INSERT INTO colegios (nombre) VALUES ('Colegio Principal')"
+        "INSERT INTO colegios (nombre, lat, lng) VALUES ('Colegio Principal', -2.9065, -79.0040)"
+      );
+    } else {
+      // Asignar coordenadas por defecto a los colegios que no las tienen
+      await pool.query(
+        "UPDATE colegios SET lat = -2.9065, lng = -79.0040 WHERE lat IS NULL OR lng IS NULL"
       );
     }
 

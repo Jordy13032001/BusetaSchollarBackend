@@ -536,7 +536,8 @@ app.get('/api/chofer/:correo/ruta-info', async (req, res) => {
     const result = await pool.query(
       `SELECT r.id_ruta, r.nombre, r.turno, r.sectores,
               TO_CHAR(r.hora_salida_estimada, 'HH24:MI') AS hora_salida,
-              c.nombre AS colegio, r.id_colegio
+              c.nombre AS colegio, r.id_colegio,
+              c.lat AS lat_colegio, c.lng AS lng_colegio
        FROM rutas r JOIN colegios c ON c.id_colegio = r.id_colegio
        WHERE r.id_ruta = $1`,
       [idRuta]
