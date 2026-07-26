@@ -526,6 +526,17 @@ app.post('/api/estudiantes/:id/rechazar', async (req, res) => {
   }
 });
 
+// Listado de colegios disponibles
+app.get('/api/colegios', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id_colegio, nombre FROM colegios ORDER BY nombre');
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener colegios:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // 6e. Datos descriptivos de la ruta del chofer (lo que el padre ve al contratar)
 app.get('/api/chofer/:correo/ruta-info', async (req, res) => {
   const { correo } = req.params;
