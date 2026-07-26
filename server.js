@@ -97,9 +97,9 @@ function viajeResponse(viaje, stats) {
 
 // 1. Registro de usuario
 app.post('/api/registro', async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, phone, password, role } = req.body;
 
-  if (!name || !email || !password || !role) {
+  if (!name || !email || !phone || !password || !role) {
     return res.status(400).json({ error: 'Todos los campos son obligatorios' });
   }
   if (!['padre', 'chofer'].includes(role)) {
@@ -112,9 +112,9 @@ app.post('/api/registro', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
     const insertUsuario = await client.query(
-      `INSERT INTO usuarios (password_hash, rol, nombre_completo, correo)
-       VALUES ($1, $2, $3, $4) RETURNING id_usuario, nombre_completo, correo, rol`,
-      [passwordHash, role, name, email]
+      `INSERT INTO usuarios (password_hash, rol, nombre_completo, correo, telefono)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id_usuario, nombre_completo, correo, rol`,
+      [passwordHash, role, name, email, phone]
     );
     const usuario = insertUsuario.rows[0];
 
@@ -149,8 +149,8 @@ app.post('/api/registro', async (req, res) => {
 
 // 2. Unirse como conductor (Postulación)
 app.post('/api/unirse-conductor', async (req, res) => {
-  const { email, placa, modelo, capacidad, tarifa_mensual } = req.body;
-  if (!email || !placa || !modelo || !capacidad || !tarifa_mensual) {
+  const { email, licencia, placa, modelo, capacidad, tarifa_mensual } = req.body;
+  if (!email || !licencia || !placa || !modelo || !capacidad || !tarifa_mensual) {
     return res.status(400).json({ error: 'Todos los campos son requeridos' });
   }
 
@@ -179,9 +179,9 @@ app.post('/api/unirse-conductor', async (req, res) => {
     }
 
     await client.query(
-      `INSERT INTO solicitudes_chofer (id_usuario, placa, modelo, capacidad, tarifa_mensual)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [idUsuario, placa, modelo, capacidad, tarifa_mensual]
+      `INSERT INTO solicitudes_chofer (id_usuario, licencia, placa, modelo, capacidad, tarifa_mensual)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [idUsuario, licencia, placa, modelo, capacidad, tarifa_mensual]
     );
 
     await client.query('COMMIT');
@@ -237,8 +237,8 @@ app.post('/api/solicitudes/:id/aprobar', async (req, res) => {
     const nombreCompleto = usuarioResult.rows[0].nombre_completo;
 
     await client.query(
-      'INSERT INTO perfil_chofer (id_chofer, tarifa_mensual) VALUES ($1, $2) ON CONFLICT (id_chofer) DO UPDATE SET tarifa_mensual = EXCLUDED.tarifa_mensual',
-      [sol.id_usuario, sol.tarifa_mensual]
+      'INSERT INTO perfil_chofer (id_chofer, licencia, tarifa_mensual) VALUES ($1, $2, $3) ON CONFLICT (id_chofer) DO UPDATE SET licencia = EXCLUDED.licencia, tarifa_mensual = EXCLUDED.tarifa_mensual',
+      [sol.id_usuario, sol.licencia, sol.tarifa_mensual]
     );
     
     // Crear bus
