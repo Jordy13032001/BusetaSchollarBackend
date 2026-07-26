@@ -147,7 +147,7 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-// 2. Unirse como conductor (Postulación)
+// 2. Registrar datos del vehículo (directo, sin aprobación)
 app.post('/api/unirse-conductor', async (req, res) => {
   const { email, licencia, placa, modelo, capacidad, tarifa_mensual } = req.body;
   if (!email || !licencia || !placa || !modelo || !capacidad || !tarifa_mensual) {
@@ -159,38 +159,39 @@ app.post('/api/unirse-conductor', async (req, res) => {
     await client.query('BEGIN');
 
     const usuarioResult = await client.query(
-      'SELECT id_usuario FROM usuarios WHERE correo = $1',
+      'SELECT id_usuario, nombre_completo FROM usuarios WHERE correo = $1',
       [email]
     );
     if (usuarioResult.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
-    const idUsuario = usuarioResult.rows[0].id_usuario;
+    const { id_usuario: idUsuario, nombre_completo: nombreCompleto } = usuarioResult.rows[0];
 
-    // Verificar si ya tiene una solicitud pendiente
-    const existente = await client.query(
-      "SELECT id_solicitud FROM solicitudes_chofer WHERE id_usuario = $1 AND estado = 'PENDIENTE'",
-      [idUsuario]
-    );
-    if (existente.rowCount > 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Ya tienes una solicitud pendiente' });
-    }
-
+    // Actualizar perfil_chofer con licencia y tarifa
     await client.query(
-      `INSERT INTO solicitudes_chofer (id_usuario, licencia, placa, modelo, capacidad, tarifa_mensual)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [idUsuario, licencia, placa, modelo, capacidad, tarifa_mensual]
+      `INSERT INTO perfil_chofer (id_chofer, licencia, tarifa_mensual)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (id_chofer) DO UPDATE SET licencia = EXCLUDED.licencia, tarifa_mensual = EXCLUDED.tarifa_mensual`,
+      [idUsuario, licencia, tarifa_mensual]
     );
+
+    // Crear o actualizar bus
+    await client.query(
+      `INSERT INTO buses (placa, modelo, capacidad, id_chofer_asignado)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (placa) DO UPDATE SET modelo = EXCLUDED.modelo, capacidad = EXCLUDED.capacidad, id_chofer_asignado = EXCLUDED.id_chofer_asignado`,
+      [placa, modelo, capacidad, idUsuario]
+    );
+
+    // Asegurar que tiene ruta creada
+    await getOrCreateRutaForChofer(client, idUsuario, nombreCompleto);
 
     await client.query('COMMIT');
-    res.status(200).json({
-      message: 'Solicitud enviada exitosamente para aprobación',
-    });
+    res.status(200).json({ message: 'Datos del vehículo registrados correctamente' });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error al enviar solicitud:', err);
+    console.error('Error al registrar vehículo:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   } finally {
     client.release();
@@ -923,6 +924,38 @@ app.delete('/api/estudiantes/:id/ruta', async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   } finally {
     client.release();
+  }
+});
+
+// Estado del vehículo del chofer
+app.get('/api/chofer/:correo/estado-vehiculo', async (req, res) => {
+  const { correo } = req.params;
+  try {
+    const usuarioResult = await pool.query(
+      'SELECT id_usuario FROM usuarios WHERE correo = $1', [correo]
+    );
+    if (usuarioResult.rowCount === 0) return res.status(404).json({ error: 'Chofer no encontrado' });
+    const idUsuario = usuarioResult.rows[0].id_usuario;
+
+    const busResult = await pool.query(
+      'SELECT placa, modelo, capacidad FROM buses WHERE id_chofer_asignado = $1', [idUsuario]
+    );
+    if (busResult.rowCount > 0) {
+      const bus = busResult.rows[0];
+      return res.status(200).json({ estado: 'APROBADO', placa: bus.placa, modelo: bus.modelo, capacidad: bus.capacidad });
+    }
+
+    const solicitudResult = await pool.query(
+      "SELECT estado FROM solicitudes_chofer WHERE id_usuario = $1 ORDER BY id_solicitud DESC LIMIT 1", [idUsuario]
+    );
+    if (solicitudResult.rowCount > 0) {
+      return res.status(200).json({ estado: solicitudResult.rows[0].estado });
+    }
+
+    return res.status(200).json({ estado: 'SIN_DATOS' });
+  } catch (err) {
+    console.error('Error al obtener estado vehiculo:', err);
+    res.status(500).json({ error: 'Error interno' });
   }
 });
 
