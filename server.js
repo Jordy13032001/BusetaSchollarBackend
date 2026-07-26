@@ -888,6 +888,44 @@ app.post('/api/viajes/:id_viaje/notificar-llegada', async (req, res) => {
   }
 });
 
+// Padre retira a su hijo de la ruta activa
+app.delete('/api/estudiantes/:id/ruta', async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const est = await client.query(
+      'SELECT id_parada FROM estudiantes WHERE id_estudiante = $1',
+      [id]
+    );
+    if (est.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Estudiante no encontrado' });
+    }
+
+    const idParada = est.rows[0].id_parada;
+
+    await client.query(
+      'UPDATE estudiantes SET id_ruta = NULL, id_parada = NULL WHERE id_estudiante = $1',
+      [id]
+    );
+
+    if (idParada) {
+      await client.query('DELETE FROM paradas WHERE id_parada = $1', [idParada]);
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Estudiante retirado de la ruta correctamente' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al retirar estudiante de la ruta:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
