@@ -342,7 +342,7 @@ app.get('/api/choferes', async (req, res) => {
               c.nombre AS colegio
        FROM perfil_chofer pc
        JOIN usuarios u ON u.id_usuario = pc.id_chofer
-       LEFT JOIN buses b ON b.id_chofer_asignado = pc.id_chofer
+       JOIN buses b ON b.id_chofer_asignado = pc.id_chofer
        LEFT JOIN rutas r ON r.id_chofer = pc.id_chofer
        LEFT JOIN colegios c ON c.id_colegio = r.id_colegio
        ORDER BY u.nombre_completo`
