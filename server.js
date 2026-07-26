@@ -823,6 +823,71 @@ app.post('/api/viajes/:id_viaje/asistencia', async (req, res) => {
   }
 });
 
+// POST /api/notificaciones/cerca — notifica al padre que la buseta está cerca de la parada de su hijo
+app.post('/api/notificaciones/cerca', async (req, res) => {
+  const { id_viaje, id_estudiante } = req.body;
+  if (!id_viaje || !id_estudiante) return res.status(400).json({ error: 'Faltan datos' });
+
+  try {
+    const estResult = await pool.query(
+      'SELECT nombre_completo FROM estudiantes WHERE id_estudiante = $1',
+      [id_estudiante]
+    );
+    const nombre = estResult.rows[0]?.nombre_completo ?? 'Tu hijo';
+
+    const padresResult = await pool.query(
+      'SELECT id_padre FROM padres_estudiantes WHERE id_estudiante = $1',
+      [id_estudiante]
+    );
+    for (const row of padresResult.rows) {
+      await pool.query(
+        `INSERT INTO notificaciones (id_usuario_destino, id_viaje, titulo, mensaje, tipo)
+         VALUES ($1, $2, 'Buseta cerca', $3, 'CERCA')`,
+        [row.id_padre, id_viaje, `La buseta está cerca de la parada de ${nombre}`]
+      );
+    }
+    res.status(200).json({ message: 'Notificación CERCA enviada' });
+  } catch (err) {
+    console.error('Error CERCA:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// POST /api/viajes/:id_viaje/notificar-llegada — notifica a padres de niños que subieron que el bus llegó al colegio
+app.post('/api/viajes/:id_viaje/notificar-llegada', async (req, res) => {
+  const { id_viaje } = req.params;
+
+  try {
+    const asistencias = await pool.query(
+      `SELECT a.id_estudiante, e.nombre_completo
+       FROM asistencias a
+       JOIN estudiantes e ON e.id_estudiante = a.id_estudiante
+       WHERE a.id_viaje = $1 AND a.subio = true`,
+      [id_viaje]
+    );
+
+    let count = 0;
+    for (const est of asistencias.rows) {
+      const padres = await pool.query(
+        'SELECT id_padre FROM padres_estudiantes WHERE id_estudiante = $1',
+        [est.id_estudiante]
+      );
+      for (const padre of padres.rows) {
+        await pool.query(
+          `INSERT INTO notificaciones (id_usuario_destino, id_viaje, titulo, mensaje, tipo)
+           VALUES ($1, $2, '¡Llegó al colegio!', $3, 'FINALIZADA')`,
+          [padre.id_padre, id_viaje, `${est.nombre_completo} llegó al colegio`]
+        );
+        count++;
+      }
+    }
+    res.status(200).json({ message: 'Notificaciones FINALIZADA enviadas', count });
+  } catch (err) {
+    console.error('Error FINALIZADA:', err);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
