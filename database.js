@@ -90,6 +90,7 @@ const initializeDatabase = async () => {
       CREATE TABLE IF NOT EXISTS solicitudes_chofer (
         id_solicitud    SERIAL PRIMARY KEY,
         id_usuario      INTEGER NOT NULL REFERENCES usuarios(id_usuario) ON DELETE CASCADE,
+        licencia        VARCHAR(30),
         placa           VARCHAR(15) NOT NULL,
         modelo          VARCHAR(60) NOT NULL,
         capacidad       INTEGER NOT NULL,
@@ -242,6 +243,11 @@ const initializeDatabase = async () => {
       -- sobre qué hijo actuar (pagar o reenviar la solicitud a otro chofer).
       ALTER TABLE notificaciones
         ADD COLUMN IF NOT EXISTS id_estudiante INTEGER REFERENCES estudiantes(id_estudiante) ON DELETE CASCADE;
+
+      -- La licencia se pide en el formulario del chofer y el admin la revisa
+      -- antes de aprobar, pero la tabla se creó sin esta columna.
+      ALTER TABLE solicitudes_chofer
+        ADD COLUMN IF NOT EXISTS licencia VARCHAR(30);
 
       CREATE INDEX IF NOT EXISTS idx_estudiantes_estado ON estudiantes(estado);
     `);

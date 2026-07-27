@@ -147,7 +147,10 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-// 2. Registrar datos del vehículo (directo, sin aprobación)
+// 2. Registrar datos del vehículo: crea una solicitud que el admin debe aprobar.
+// El bus no se crea aquí; se crea al aprobar, en /api/solicitudes/:id/aprobar.
+// Mientras tanto el chofer no aparece en GET /api/choferes (ese JOIN exige bus),
+// así que ningún padre puede contratarlo antes de la revisión.
 app.post('/api/unirse-conductor', async (req, res) => {
   const { email, licencia, placa, modelo, capacidad, tarifa_mensual } = req.body;
   if (!email || !licencia || !placa || !modelo || !capacidad || !tarifa_mensual) {
@@ -159,36 +162,68 @@ app.post('/api/unirse-conductor', async (req, res) => {
     await client.query('BEGIN');
 
     const usuarioResult = await client.query(
-      'SELECT id_usuario, nombre_completo FROM usuarios WHERE correo = $1',
+      'SELECT id_usuario FROM usuarios WHERE correo = $1',
       [email]
     );
     if (usuarioResult.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
-    const { id_usuario: idUsuario, nombre_completo: nombreCompleto } = usuarioResult.rows[0];
+    const idUsuario = usuarioResult.rows[0].id_usuario;
 
-    // Actualizar perfil_chofer con licencia y tarifa
-    await client.query(
-      `INSERT INTO perfil_chofer (id_chofer, licencia, tarifa_mensual)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (id_chofer) DO UPDATE SET licencia = EXCLUDED.licencia, tarifa_mensual = EXCLUDED.tarifa_mensual`,
-      [idUsuario, licencia, tarifa_mensual]
+    // Si ya tiene bus es que un admin ya lo aprobó: no se vuelve a pedir revisión,
+    // solo se actualizan los datos del vehículo.
+    const busExistente = await client.query(
+      'SELECT id_bus FROM buses WHERE id_chofer_asignado = $1',
+      [idUsuario]
     );
+    if (busExistente.rowCount > 0) {
+      await client.query(
+        `UPDATE perfil_chofer SET licencia = $2, tarifa_mensual = $3 WHERE id_chofer = $1`,
+        [idUsuario, licencia, tarifa_mensual]
+      );
+      await client.query(
+        `UPDATE buses SET placa = $2, modelo = $3, capacidad = $4 WHERE id_bus = $1`,
+        [busExistente.rows[0].id_bus, placa, modelo, capacidad]
+      );
+      await client.query('COMMIT');
+      return res.status(200).json({
+        message: 'Datos del vehículo actualizados',
+        estado: 'APROBADO',
+      });
+    }
 
-    // Crear o actualizar bus
-    await client.query(
-      `INSERT INTO buses (placa, modelo, capacidad, id_chofer_asignado)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (placa) DO UPDATE SET modelo = EXCLUDED.modelo, capacidad = EXCLUDED.capacidad, id_chofer_asignado = EXCLUDED.id_chofer_asignado`,
-      [placa, modelo, capacidad, idUsuario]
+    // Una sola solicitud pendiente a la vez, para que el admin no vea duplicados
+    const pendiente = await client.query(
+      "SELECT id_solicitud FROM solicitudes_chofer WHERE id_usuario = $1 AND estado = 'PENDIENTE'",
+      [idUsuario]
     );
+    if (pendiente.rowCount > 0) {
+      await client.query(
+        `UPDATE solicitudes_chofer
+         SET licencia = $2, placa = $3, modelo = $4, capacidad = $5, tarifa_mensual = $6,
+             fecha_creacion = NOW()
+         WHERE id_solicitud = $1`,
+        [pendiente.rows[0].id_solicitud, licencia, placa, modelo, capacidad, tarifa_mensual]
+      );
+      await client.query('COMMIT');
+      return res.status(200).json({
+        message: 'Ya tenías una solicitud pendiente; se actualizaron los datos.',
+        estado: 'PENDIENTE',
+      });
+    }
 
-    // Asegurar que tiene ruta creada
-    await getOrCreateRutaForChofer(client, idUsuario, nombreCompleto);
+    await client.query(
+      `INSERT INTO solicitudes_chofer (id_usuario, licencia, placa, modelo, capacidad, tarifa_mensual, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, 'PENDIENTE')`,
+      [idUsuario, licencia, placa, modelo, capacidad, tarifa_mensual]
+    );
 
     await client.query('COMMIT');
-    res.status(200).json({ message: 'Datos del vehículo registrados correctamente' });
+    res.status(201).json({
+      message: 'Solicitud enviada. Un administrador debe aprobarla.',
+      estado: 'PENDIENTE',
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error al registrar vehículo:', err);
@@ -242,9 +277,15 @@ app.post('/api/solicitudes/:id/aprobar', async (req, res) => {
       [sol.id_usuario, sol.licencia, sol.tarifa_mensual]
     );
     
-    // Crear bus
+    // Crear bus. Con DO NOTHING, si la placa ya existía el chofer se quedaba sin
+    // bus y por lo tanto invisible para los padres, sin ningún aviso.
     await client.query(
-      'INSERT INTO buses (placa, modelo, capacidad, id_chofer_asignado) VALUES ($1, $2, $3, $4) ON CONFLICT (placa) DO NOTHING',
+      `INSERT INTO buses (placa, modelo, capacidad, id_chofer_asignado)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (placa) DO UPDATE
+         SET modelo = EXCLUDED.modelo,
+             capacidad = EXCLUDED.capacidad,
+             id_chofer_asignado = EXCLUDED.id_chofer_asignado`,
       [sol.placa, sol.modelo, sol.capacidad, sol.id_usuario]
     );
 
