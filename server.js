@@ -537,6 +537,28 @@ app.get('/api/colegios', async (req, res) => {
   }
 });
 
+// Crear nuevo colegio
+app.post('/api/colegios', async (req, res) => {
+  const { nombre } = req.body;
+  if (!nombre || !nombre.trim()) {
+    return res.status(400).json({ error: 'El nombre del colegio es requerido' });
+  }
+  try {
+    const existe = await pool.query('SELECT id_colegio FROM colegios WHERE LOWER(nombre) = LOWER($1)', [nombre.trim()]);
+    if (existe.rowCount > 0) {
+      return res.status(409).json({ error: 'Ya existe un colegio con ese nombre' });
+    }
+    const result = await pool.query(
+      'INSERT INTO colegios (nombre) VALUES ($1) RETURNING id_colegio, nombre',
+      [nombre.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('Error al crear colegio:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // 6e. Datos descriptivos de la ruta del chofer (lo que el padre ve al contratar)
 app.get('/api/chofer/:correo/ruta-info', async (req, res) => {
   const { correo } = req.params;
