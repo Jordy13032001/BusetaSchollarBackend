@@ -488,41 +488,179 @@ app.get('/api/chofer/:correo/estudiantes/solicitudes', async (req, res) => {
   }
 });
 
+// Avisa a los padres del estudiante que el chofer resolvió su solicitud.
+// Se llama dentro de la misma transacción que cambia el estado: si falla la
+// notificación, el estado tampoco se guarda y el padre nunca queda desinformado.
+async function notificarResolucionSolicitud(client, idEstudiante, aceptado) {
+  const estudiante = await client.query(
+    `SELECT e.nombre_completo, u.nombre_completo AS nombre_chofer
+     FROM estudiantes e
+     LEFT JOIN rutas r ON r.id_ruta = e.id_ruta
+     LEFT JOIN usuarios u ON u.id_usuario = r.id_chofer
+     WHERE e.id_estudiante = $1`,
+    [idEstudiante]
+  );
+  const nombre = estudiante.rows[0]?.nombre_completo ?? 'Tu hijo';
+  const chofer = estudiante.rows[0]?.nombre_chofer ?? 'El chofer';
+
+  const titulo = aceptado ? 'Solicitud aceptada' : 'Solicitud rechazada';
+  const mensaje = aceptado
+    ? `${chofer} aceptó a ${nombre}. Ya puedes proceder al pago.`
+    : `${chofer} rechazó la solicitud de ${nombre}. Puedes enviarla a otro chofer.`;
+  const tipo = aceptado ? 'SOLICITUD_ACEPTADA' : 'SOLICITUD_RECHAZADA';
+
+  const padres = await client.query(
+    'SELECT id_padre FROM padres_estudiantes WHERE id_estudiante = $1',
+    [idEstudiante]
+  );
+  for (const padre of padres.rows) {
+    await client.query(
+      `INSERT INTO notificaciones (id_usuario_destino, id_estudiante, titulo, mensaje, tipo)
+       VALUES ($1, $2, $3, $4, $5::tipo_notificacion)`,
+      [padre.id_padre, idEstudiante, titulo, mensaje, tipo]
+    );
+  }
+}
+
 // 6c. El chofer acepta un estudiante: entra a la ruta
 app.post('/api/estudiantes/:id/aceptar', async (req, res) => {
   const { id } = req.params;
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query('BEGIN');
+
+    const result = await client.query(
       `UPDATE estudiantes SET estado = 'ACEPTADO'
        WHERE id_estudiante = $1 RETURNING id_estudiante`,
       [id]
     );
     if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Estudiante no encontrado' });
     }
+
+    await notificarResolucionSolicitud(client, id, true);
+
+    await client.query('COMMIT');
     res.status(200).json({ message: 'Estudiante aceptado' });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al aceptar estudiante:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
 });
 
 // 6d. El chofer rechaza un estudiante: no forma parte de la ruta
 app.post('/api/estudiantes/:id/rechazar', async (req, res) => {
   const { id } = req.params;
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query('BEGIN');
+
+    const result = await client.query(
       `UPDATE estudiantes SET estado = 'RECHAZADO'
        WHERE id_estudiante = $1 RETURNING id_estudiante`,
       [id]
     );
     if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Estudiante no encontrado' });
     }
+
+    // Rechazar no borra id_ruta, así que aquí todavía se puede leer qué chofer fue.
+    await notificarResolucionSolicitud(client, id, false);
+
+    await client.query('COMMIT');
     res.status(200).json({ message: 'Estudiante rechazado' });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al rechazar estudiante:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
+  }
+});
+
+// 6f. El padre reenvía la solicitud de un hijo rechazado a otro chofer.
+// Se reutiliza el mismo estudiante en vez de crear uno nuevo, así el padre no
+// termina con hijos duplicados en su lista.
+app.put('/api/estudiantes/:id/reasignar', async (req, res) => {
+  const { id } = req.params;
+  const { correo_chofer, direccion, lat, lng } = req.body;
+  if (!correo_chofer) {
+    return res.status(400).json({ error: 'Falta el correo del chofer' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const estResult = await client.query(
+      `SELECT e.id_estudiante, e.id_parada, p.nombre AS direccion, p.lat, p.lng
+       FROM estudiantes e
+       LEFT JOIN paradas p ON p.id_parada = e.id_parada
+       WHERE e.id_estudiante = $1`,
+      [id]
+    );
+    if (estResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Estudiante no encontrado' });
+    }
+    const anterior = estResult.rows[0];
+
+    const chofer = await getChoferByCorreo(client, correo_chofer);
+    if (!chofer) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Chofer no encontrado' });
+    }
+    const idRuta = await getOrCreateRutaForChofer(client, chofer.id_chofer, chofer.nombre_completo);
+
+    // Si el padre no manda dirección nueva, se conserva la que ya tenía.
+    const nombreParada = direccion || anterior.direccion;
+    if (!nombreParada) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'El estudiante no tiene dirección registrada' });
+    }
+    const nuevaLat = lat ?? anterior.lat ?? null;
+    const nuevaLng = lng ?? anterior.lng ?? null;
+
+    const ordenResult = await client.query(
+      'SELECT COALESCE(MAX(orden), 0) + 1 AS siguiente FROM paradas WHERE id_ruta = $1',
+      [idRuta]
+    );
+
+    const paradaInsert = await client.query(
+      `INSERT INTO paradas (id_ruta, orden, nombre, lat, lng)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id_parada`,
+      [idRuta, ordenResult.rows[0].siguiente, nombreParada, nuevaLat, nuevaLng]
+    );
+
+    await client.query(
+      `UPDATE estudiantes SET id_ruta = $1, id_parada = $2, estado = 'PENDIENTE'
+       WHERE id_estudiante = $3`,
+      [idRuta, paradaInsert.rows[0].id_parada, id]
+    );
+
+    // La parada vieja se borra después de mover al estudiante para no dejarla huérfana.
+    if (anterior.id_parada) {
+      await client.query('DELETE FROM paradas WHERE id_parada = $1', [anterior.id_parada]);
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({
+      message: 'Solicitud reenviada. El nuevo chofer debe aceptarla.',
+      id_estudiante: Number(id),
+      correo_chofer,
+      estado: 'PENDIENTE',
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al reasignar estudiante:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  } finally {
+    client.release();
   }
 });
 
@@ -610,8 +748,11 @@ app.get('/api/notificaciones/:parent_email', async (req, res) => {
     const result = await pool.query(
       `SELECT n.id_notificacion AS id, n.titulo AS title, n.mensaje AS message,
               TO_CHAR(n.fecha_hora, 'YYYY-MM-DD HH24:MI') AS timestamp, n.tipo AS type,
-              u.correo AS parent_email
-       FROM notificaciones n JOIN usuarios u ON u.id_usuario = n.id_usuario_destino
+              u.correo AS parent_email, n.id_estudiante,
+              e.nombre_completo AS nombre_estudiante, e.estado AS estado_estudiante
+       FROM notificaciones n
+       JOIN usuarios u ON u.id_usuario = n.id_usuario_destino
+       LEFT JOIN estudiantes e ON e.id_estudiante = n.id_estudiante
        WHERE u.correo = $1 ORDER BY n.id_notificacion DESC`,
       [parent_email]
     );

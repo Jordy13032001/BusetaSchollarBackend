@@ -185,6 +185,7 @@ const initializeDatabase = async () => {
         id_notificacion     SERIAL PRIMARY KEY,
         id_usuario_destino  INTEGER NOT NULL REFERENCES usuarios(id_usuario) ON DELETE CASCADE,
         id_viaje            INTEGER REFERENCES viajes(id_viaje),
+        id_estudiante       INTEGER REFERENCES estudiantes(id_estudiante) ON DELETE CASCADE,
         titulo              VARCHAR(120) NOT NULL,
         mensaje             VARCHAR(255) NOT NULL,
         tipo                tipo_notificacion NOT NULL,
@@ -213,6 +214,15 @@ const initializeDatabase = async () => {
       CREATE INDEX IF NOT EXISTS idx_ubicaciones_viaje_fecha ON ubicaciones_bus(id_viaje, fecha_hora);
     `);
 
+    // Los valores nuevos del enum van en su propia consulta: PostgreSQL no permite
+    // usar un valor recién agregado dentro de la misma transacción que lo creó.
+    await pool.query(`
+      ALTER TYPE tipo_notificacion ADD VALUE IF NOT EXISTS 'SOLICITUD_ACEPTADA';
+    `);
+    await pool.query(`
+      ALTER TYPE tipo_notificacion ADD VALUE IF NOT EXISTS 'SOLICITUD_RECHAZADA';
+    `);
+
     // Migraciones para bases ya creadas: CREATE TABLE IF NOT EXISTS no agrega
     // columnas nuevas a tablas existentes, así que se añaden aquí.
     await pool.query(`
@@ -227,6 +237,11 @@ const initializeDatabase = async () => {
       -- Descripción de la ruta que el padre ve antes de contratar al chofer.
       ALTER TABLE rutas
         ADD COLUMN IF NOT EXISTS sectores VARCHAR(255);
+
+      -- Estudiante al que se refiere la notificación. Lo necesita el padre para saber
+      -- sobre qué hijo actuar (pagar o reenviar la solicitud a otro chofer).
+      ALTER TABLE notificaciones
+        ADD COLUMN IF NOT EXISTS id_estudiante INTEGER REFERENCES estudiantes(id_estudiante) ON DELETE CASCADE;
 
       CREATE INDEX IF NOT EXISTS idx_estudiantes_estado ON estudiantes(estado);
     `);
